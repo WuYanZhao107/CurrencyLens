@@ -155,12 +155,32 @@
                 <button type="button" data-pair="usdCny">USD / CNY</button>
                 <button type="button" data-pair="audUsd">AUD / USD</button>
               </div>
-              <div class="ma-toggles" id="maToggles" role="group" aria-label="Moving averages">
+              <div class="ma-toggles" id="maToggles" role="group" aria-label="Moving averages and comparison">
                 <button type="button" data-ma="7" class="ma-btn" aria-pressed="false"><i class="ma-dot ma-dot-7" aria-hidden="true"></i><span data-i18n="ma7Label">7日均线</span></button>
                 <button type="button" data-ma="30" class="ma-btn" aria-pressed="false"><i class="ma-dot ma-dot-30" aria-hidden="true"></i><span data-i18n="ma30Label">30日均线</span></button>
+                <button type="button" id="compareBtn" class="ma-btn" aria-pressed="false"><i class="ma-dot ma-dot-cmp" aria-hidden="true"></i><span data-i18n="compareLabel">涨跌幅对比</span></button>
               </div>
             </div>
             <span class="chart-label" id="chartSource">每日参考汇率 · ECB via Frankfurter</span>
+          </div>
+
+          <div class="target-bar">
+            <div class="target-group">
+              <label class="target-label">
+                <span data-i18n="targetLabel">目标汇率线</span>
+                <input type="text" inputmode="decimal" id="targetRateInput" placeholder="4.5000" autocomplete="off">
+              </label>
+              <button type="button" id="clearTarget" class="ghost-btn" hidden data-i18n="clearBtn">清除</button>
+              <span class="target-status tabular" id="targetStatus"></span>
+            </div>
+            <button type="button" id="exportCsv" class="ghost-btn export-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              <span data-i18n="exportCsv">导出 CSV</span>
+            </button>
           </div>
 
           <div class="chart-summary">
@@ -171,7 +191,7 @@
                 <span id="chartChange" class="change tabular">—</span>
               </div>
             </div>
-            <div class="summary-metrics">
+            <div class="summary-metrics" id="summaryMetrics">
               <div class="metric-chip">
                 <small data-i18n="metricHigh">区间最高</small>
                 <strong id="metricHigh" class="tabular">—</strong>
@@ -185,6 +205,7 @@
                 <strong id="metricSpread" class="tabular">—</strong>
               </div>
             </div>
+            <div class="compare-legend" id="compareLegend" hidden></div>
           </div>
 
           <div class="chart" id="chart">
@@ -214,6 +235,7 @@
             </label>
             <button type="button" id="jumpLatest" class="ghost-btn" data-i18n="latestBtn">最新</button>
           </div>
+          <div class="agency-filters" id="agencyFilters" role="group" aria-label="Filter by institution"></div>
           <p class="event-caption" id="eventCaption">正在获取历史事件…</p>
           <div id="news" class="news-list">
             <div class="loading" data-i18n="loadingNews">正在获取资讯…</div>

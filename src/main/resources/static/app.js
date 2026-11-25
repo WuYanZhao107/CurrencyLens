@@ -5,10 +5,17 @@ let seriesRequestId = 0, requestedSeries = '', custom = false, requestId = 0;
 let pair = 'audCny', days = 30, events = [], eventErrors = [], eventsReady = false, selectedDate = null;
 let lastCheckedAt = null, lastRangeNote = { type: 'default' };
 let convReversed = false, animateChartNext = true;
-let showMa7 = false, showMa30 = false;
+let showMa7 = false, showMa30 = false, compareMode = false, agencyFilter = 'all';
+let targets = { audCny: '', usdCny: '', audUsd: '' };
+let lastVisibleData = [];
 try {
   showMa7 = localStorage.getItem('cl_ma7') === '1';
   showMa30 = localStorage.getItem('cl_ma30') === '1';
+  compareMode = localStorage.getItem('cl_compare') === '1';
+  const savedTargets = JSON.parse(localStorage.getItem('cl_targets') || '{}');
+  if (savedTargets && typeof savedTargets === 'object') {
+    targets = { audCny: savedTargets.audCny || '', usdCny: savedTargets.usdCny || '', audUsd: savedTargets.audUsd || '' };
+  }
 } catch (e) {}
 
 let lang = document.documentElement.getAttribute('data-lang') === 'en' ? 'en' : 'zh';
@@ -37,6 +44,8 @@ const I18N = {
     updateFailed: '更新失败，请稍后重试',
     loadingShort: '加载中…',
     quoteFailed: '获取失败，请选择后刷新。',
+    quoteDeferred: '切换后获取最新报价',
+    badgeDeferred: 'ECB 参考',
     quoteConvert: (a, b) => `1 ${a} 兑换 ${b}`,
     selectedHint: p => `● 选中 ${p} · 点击卡片或按钮切换与刷新`,
     defaultQuoteNote: '切换货币对后，可单独刷新对应汇率。',
@@ -60,10 +69,23 @@ const I18N = {
     metricSpread: '区间振幅',
     ma7Label: '7日均线',
     ma30Label: '30日均线',
+    compareLabel: '涨跌幅对比',
+    comparePairTitle: '三货币对归一化对比',
+    compareValueSub: '区间相对变化 (%)',
+    compareSource: '归一化对比 · ECB via Frankfurter',
+    targetLabel: '目标汇率线',
+    clearBtn: '清除',
+    exportCsv: '导出 CSV',
+    targetTag: v => `目标 ${v}`,
+    targetAway: (d, up) => `距离目标 ${up ? '+' : ''}${d.toFixed(2)}%`,
+    targetReached: '已达/越过目标价',
+    allAgencies: '全部机构',
+    postMovePrefix: '公告后参考变化',
     loadingHistory: '正在加载历史数据…',
     historyError: '历史数据加载失败，请稍后重试。',
     historyInsufficient: '所选区间的汇率数据不足。',
     chartSourceRef: '每日参考汇率 · ECB via Frankfurter',
+    chartSourceFinnhubRef: 'Finnhub 实时报价 · 历史日线来自 ECB',
     chartSourceSelecting: '正在选择数据源…',
     chartSourceLoadingTwelve: '正在获取 Twelve Data 日线…',
     chartSourceTwelve: 'Twelve Data · 日线收盘价',
@@ -136,6 +158,8 @@ const I18N = {
     updateFailed: 'Update failed, try again later',
     loadingShort: 'Loading…',
     quoteFailed: 'Unavailable. Select and refresh.',
+    quoteDeferred: 'Updates when selected',
+    badgeDeferred: 'ECB Ref',
     quoteConvert: (a, b) => `1 ${a} to ${b}`,
     selectedHint: p => `● Selected ${p} · Click any card or button to switch & refresh`,
     defaultQuoteNote: 'Select a pair to refresh its quote independently.',
@@ -159,10 +183,23 @@ const I18N = {
     metricSpread: 'Spread',
     ma7Label: '7D MA',
     ma30Label: '30D MA',
+    compareLabel: 'Compare %',
+    comparePairTitle: 'Normalized 3-Pair Compare',
+    compareValueSub: 'Indexed Change (%)',
+    compareSource: 'Normalized Compare · ECB via Frankfurter',
+    targetLabel: 'Target Line',
+    clearBtn: 'Clear',
+    exportCsv: 'Export CSV',
+    targetTag: v => `Target ${v}`,
+    targetAway: (d, up) => `${up ? '+' : ''}${d.toFixed(2)}% to target`,
+    targetReached: 'At or past target',
+    allAgencies: 'All',
+    postMovePrefix: 'Post-release move',
     loadingHistory: 'Loading historical rates…',
     historyError: 'Failed to load historical rates. Try again later.',
     historyInsufficient: 'Not enough data points in the selected range.',
     chartSourceRef: 'Daily Reference · ECB via Frankfurter',
+    chartSourceFinnhubRef: 'Finnhub Live Quote · ECB Daily History',
     chartSourceSelecting: 'Selecting data source…',
     chartSourceLoadingTwelve: 'Fetching Twelve Data daily series…',
     chartSourceTwelve: 'Twelve Data · Daily Close',
@@ -215,7 +252,10 @@ const I18N = {
     footerDisclaimer: 'Educational & research prototype · Reference rates, not live trading quotes',
     backendMsgMap: {
       '未配置 Twelve Data Key，当前为每日参考汇率。': 'No Twelve Data API key configured; displaying ECB daily reference rates.',
+      '未配置 Twelve Data / Finnhub Key，当前为每日参考汇率。': 'No Twelve Data / Finnhub API key configured; displaying ECB daily reference rates.',
       '外部报价获取失败或额度不足，已切换为每日参考汇率。': 'External live quote unavailable or quota reached; switched to ECB daily reference rates.',
+      'Twelve Data 暂不可用，已切换为 Finnhub 备选实时报价。': 'Twelve Data unavailable; switched to Finnhub fallback live quote.',
+      'Finnhub 实时报价；历史日线由 Frankfurter / ECB 提供。': 'Finnhub live quote; daily chart history via Frankfurter / ECB.',
       '报价时间由数据源提供，时效取决于账户与市场。': 'Quote timestamp provided by source; freshness depends on account tier and market hours.'
     }
   }
@@ -226,10 +266,28 @@ const signed = x => `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const dateValue = d => Date.parse(d + 'T00:00:00Z');
 
-async function api(path) {
-  const r = await fetch(path);
-  if (!r.ok) throw Error('API unavailable');
-  return r.json();
+const seriesCache = new Map();
+const customRangeCache = new Map();
+let customAbort = null;
+
+async function api(path, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? 15000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
+  if (opts.signal) {
+    if (opts.signal.aborted) {
+      clearTimeout(timer);
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    opts.signal.addEventListener('abort', () => controller.abort(opts.signal.reason), { once: true });
+  }
+  try {
+    const r = await fetch(path, { signal: controller.signal });
+    if (!r.ok) throw Error('API unavailable');
+    return await r.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function translateBackendMsg(msg) {
@@ -312,14 +370,17 @@ function renderQuotes() {
     const q = d.quotes[0];
     const [base, quote] = symbol.split('/');
     const isLive = d.mode === 'live';
+    const isDeferred = Boolean(d.deferred);
+    const badgeLabel = isLive ? (d.source || 'Live') : (isDeferred ? dict.badgeDeferred : 'Frankfurter / ECB');
+    const bottomText = isDeferred ? dict.quoteDeferred : dict.quoteConvert(base, quote);
     return `<article class="quote ${isSelected ? 'quote-selected' : ''}" role="button" tabindex="0" data-pair="${pairKey}" aria-pressed="${isSelected}">
       <div class="quote-top">
         <div class="pair-identity">${flagPairHtml(symbol)}<span class="quote-name">${esc(symbol)}</span></div>
-        <span class="badge ${isLive ? 'badge-live' : ''}">${isLive ? 'Twelve Data' : 'Frankfurter / ECB'}</span>
+        <span class="badge ${isLive ? 'badge-live' : ''}">${esc(badgeLabel)}</span>
       </div>
       <div class="quote-value tabular">${Number(q.rate).toFixed(4)}</div>
       <div class="quote-bottom">
-        <span>${esc(dict.quoteConvert(base, quote))}</span>
+        <span>${esc(bottomText)}</span>
         <span class="quote-time">${esc(q.time)}${isLive ? ' (UTC)' : ''}</span>
       </div>
     </article>`;
@@ -330,6 +391,7 @@ function renderQuotes() {
   $('quoteNote').textContent = selected && !selected.error ? translateBackendMsg(selected.message) : dict.defaultQuoteNote;
   $('refreshText').textContent = dict.refreshLabel(labels[pair]);
   renderConverter();
+  renderTargetControls();
 }
 
 function updateCheckedLabel() {
@@ -377,7 +439,9 @@ async function refreshSelected() {
 
 function loadInitialQuotes() {
   renderQuotes();
-  quoteOrder.forEach(loadQuote);
+  // Only fetch the default pair (AUD/CNY) on initial load to conserve API rate limits;
+  // other pairs display ECB reference rates until selected or manually refreshed.
+  loadQuote(pairSymbols[pair]);
 }
 
 let chartSourceMode = 'ref';
@@ -385,6 +449,7 @@ function updateChartSourceText() {
   const dict = t();
   const map = {
     ref: dict.chartSourceRef,
+    finnhubRef: dict.chartSourceFinnhubRef,
     selecting: dict.chartSourceSelecting,
     loadingTwelve: dict.chartSourceLoadingTwelve,
     twelve: dict.chartSourceTwelve,
@@ -395,6 +460,23 @@ function updateChartSourceText() {
   $('chartSource').textContent = map[chartSourceMode] || dict.chartSourceRef;
 }
 
+function populateDeferredQuotes() {
+  if (!basePoints.length) return;
+  const latest = basePoints.at(-1);
+  for (const [k, symbol] of Object.entries(pairSymbols)) {
+    if (!quoteData.has(symbol) && latest[k] != null) {
+      quoteData.set(symbol, {
+        mode: 'daily',
+        source: 'Frankfurter / ECB',
+        deferred: true,
+        quotes: [{ pair: symbol, rate: Number(latest[k]), time: latest.date }],
+        message: ''
+      });
+    }
+  }
+  renderQuotes();
+}
+
 async function loadHistory() {
   try {
     const d = await api('/api/market/history');
@@ -402,6 +484,7 @@ async function loadHistory() {
     if (custom) return;
     referencePoints = basePoints;
     points = referencePoints;
+    populateDeferredQuotes();
     if (!selectedDate) selectedDate = points.at(-1).date;
     $('eventDate').min = points[0].date;
     $('eventDate').max = points.at(-1).date;
@@ -410,6 +493,7 @@ async function loadHistory() {
     draw(true);
     renderEvents();
     renderConverter();
+    renderTargetControls();
     experiment();
     loadSeries();
   } catch (e) {
@@ -436,10 +520,25 @@ async function loadSeries() {
     useReference('ref');
     return;
   }
+  if (q.source === 'Finnhub') {
+    useReference('finnhubRef');
+    return;
+  }
   const from = referencePoints[0].date;
   const today = new Date().toISOString().slice(0, 10);
   const to = (!custom || $('toMonth').value === today.slice(0, 7)) ? today : referencePoints.at(-1).date;
   const requestKey = selected + ':' + from + ':' + to;
+  if (seriesCache.has(requestKey)) {
+    requestedSeries = requestKey;
+    points = seriesCache.get(requestKey);
+    chartSource = 'twelve';
+    chartSourceMode = 'twelve';
+    updateChartSourceText();
+    draw(animateChartNext);
+    animateChartNext = false;
+    experiment();
+    return;
+  }
   if (requestKey === requestedSeries) return;
   requestedSeries = requestKey;
   const id = ++seriesRequestId, activePair = pair;
@@ -449,10 +548,12 @@ async function loadSeries() {
   updateChartSourceText();
   draw(false);
   try {
-    const result = await api(`/api/market/series?pair=${encodeURIComponent(selected)}&from=${from}&to=${to}`);
+    const result = await api(`/api/market/series?pair=${encodeURIComponent(selected)}&from=${from}&to=${to}`, { timeoutMs: 20000 });
     if (id !== seriesRequestId || activePair !== pair) return;
     if (result.points.length < 2) throw Error('Insufficient history');
-    points = result.points.map(item => ({ date: item.date, [activePair]: item.rate }));
+    const mapped = result.points.map(item => ({ date: item.date, [activePair]: item.rate }));
+    seriesCache.set(requestKey, mapped);
+    points = mapped;
     chartSource = 'twelve';
     chartSourceMode = 'twelve';
     updateChartSourceText();
@@ -494,8 +595,89 @@ function updateEventStatus() {
   $('eventStatus').textContent = dict.eventsCoverage + errText;
 }
 
+function getActiveTarget() {
+  const raw = (targets[pair] || '').trim();
+  if (!raw) return null;
+  const num = Number(raw);
+  return Number.isFinite(num) && num > 0 ? num : null;
+}
+
+function renderTargetControls() {
+  const dict = t();
+  const input = $('targetRateInput');
+  const clearBtn = $('clearTarget');
+  const statusEl = $('targetStatus');
+  if (input.value !== (targets[pair] || '')) {
+    input.value = targets[pair] || '';
+  }
+  input.disabled = compareMode;
+  const targetVal = getActiveTarget();
+  clearBtn.hidden = !targetVal || compareMode;
+  if (!targetVal || compareMode) {
+    statusEl.textContent = '';
+    return;
+  }
+  const current = getActiveRate();
+  if (!current || current <= 0) {
+    statusEl.textContent = '';
+    return;
+  }
+  const diffPct = ((targetVal / current) - 1) * 100;
+  statusEl.textContent = Math.abs(diffPct) < 0.01 ? dict.targetReached : dict.targetAway(diffPct, diffPct > 0);
+}
+
+function getRelevantAgencies() {
+  const cats = relevant[pair];
+  const list = [];
+  if (cats.includes('AUD')) list.push('澳洲联储');
+  if (cats.includes('USD')) list.push('美联储');
+  if (cats.includes('CNY')) list.push('中国人民银行', '国家外汇管理局');
+  return list;
+}
+
+function renderAgencyFilters() {
+  const dict = t();
+  const agencies = getRelevantAgencies();
+  if (agencyFilter !== 'all' && !agencies.includes(agencyFilter)) {
+    agencyFilter = 'all';
+  }
+  const pills = [
+    `<button type="button" class="agency-pill ${agencyFilter === 'all' ? 'selected' : ''}" data-agency="all">${esc(dict.allAgencies)}</button>`,
+    ...agencies.map(a => `<button type="button" class="agency-pill ${agencyFilter === a ? 'selected' : ''}" data-agency="${esc(a)}">${esc(dict.sourceMap[a] || a)}</button>`)
+  ];
+  $('agencyFilters').innerHTML = pills.join('');
+}
+
+function postEventMoves(eventDate) {
+  const series = referencePoints.length ? referencePoints : points;
+  if (!series || series.length < 2) return [];
+  let baseIdx = -1;
+  for (let i = series.length - 1; i >= 0; i--) {
+    if (series[i].date <= eventDate) {
+      baseIdx = i;
+      break;
+    }
+  }
+  if (baseIdx < 0) return [];
+  const baseVal = Number(series[baseIdx][pair]);
+  if (!Number.isFinite(baseVal) || baseVal <= 0) return [];
+  const baseMs = dateValue(series[baseIdx].date);
+  const horizons = [1, 3, 7];
+  const moves = [];
+  for (const h of horizons) {
+    const targetMs = baseMs + h * 86400000;
+    const found = series.find((p, idx) => idx > baseIdx && dateValue(p.date) >= targetMs);
+    if (found) {
+      const pct = ((Number(found[pair]) / baseVal) - 1) * 100;
+      moves.push({ label: `+${h}D`, pct });
+    }
+  }
+  return moves;
+}
+
 function renderEvents() {
   const dict = t();
+  renderAgencyFilters();
   if (!selectedDate || !eventsReady) return;
   const coverageYear = new Date().getUTCFullYear() - 2;
   if (Number(selectedDate.slice(0, 4)) < coverageYear) {
@@ -504,18 +686,30 @@ function renderEvents() {
     return;
   }
   const end = dateValue(selectedDate), begin = end - 7 * 86400000;
-  const matched = events.filter(e => relevant[pair].includes(e.category) && dateValue(e.date) >= begin && dateValue(e.date) <= end);
+  const matched = events.filter(e =>
+    relevant[pair].includes(e.category) &&
+    (agencyFilter === 'all' || e.source === agencyFilter) &&
+    dateValue(e.date) >= begin &&
+    dateValue(e.date) <= end
+  );
   $('eventCaption').textContent = dict.eventsCaption(labels[pair], selectedDate, matched.length);
   $('news').innerHTML = matched.length
-    ? matched.slice(0, 10).map(e => `
+    ? matched.slice(0, 10).map(e => {
+        const moves = postEventMoves(e.date);
+        const movesHtml = moves.length
+          ? `<div class="story-moves" title="${esc(dict.postMovePrefix)}">${moves.map(m => `<span class="move-chip tabular ${m.pct >= 0 ? 'up' : 'down'}">${m.label} ${signed(m.pct)}</span>`).join('')}</div>`
+          : '';
+        return `
       <article class="story">
         <div class="story-meta">
           <span class="story-source">${esc(dict.sourceMap[e.source] || e.source)}</span>
           <span class="tabular">${esc(e.date)}</span>
         </div>
         <a href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">${esc(e.title)} ↗</a>
+        ${movesHtml}
         <div class="story-reason">${esc(dict.eventReason(e.category))}</div>
-      </article>`).join('')
+      </article>`;
+      }).join('')
     : `<p class="muted">${esc(dict.eventsEmpty)}</p>`;
 }
 
@@ -530,7 +724,144 @@ function computeSma(series, key, windowSize) {
   return out;
 }
 
+function drawCompare(animate = false) {
+  const dict = t();
+  const src = referencePoints.length >= 2 ? referencePoints : points;
+  if (src.length < 2 || src[0].audCny == null || src[0].usdCny == null || src[0].audUsd == null) {
+    $('chart').innerHTML = `<div class="loading">${esc(dict.historyInsufficient)}</div>`;
+    return;
+  }
+  const end = dateValue(src.at(-1).date);
+  const start = custom ? dateValue(src[0].date) : end - days * 86400000;
+  const data = src.filter(p => dateValue(p.date) >= start);
+  if (data.length < 2) {
+    $('chart').innerHTML = `<div class="loading">${esc(dict.historyInsufficient)}</div>`;
+    return;
+  }
+  lastVisibleData = data;
+
+  const seriesDefs = [
+    { key: 'audCny', name: 'AUD / CNY', color: 'var(--chart-line)' },
+    { key: 'usdCny', name: 'USD / CNY', color: 'var(--chart-ma7)' },
+    { key: 'audUsd', name: 'AUD / USD', color: 'var(--chart-event-pin)' }
+  ];
+
+  const bases = {};
+  const pctSeries = {};
+  let yMin = 0, yMax = 0;
+  for (const s of seriesDefs) {
+    bases[s.key] = Number(data[0][s.key]);
+    pctSeries[s.key] = data.map(p => ((Number(p[s.key]) / bases[s.key]) - 1) * 100);
+    for (const val of pctSeries[s.key]) {
+      yMin = Math.min(yMin, val);
+      yMax = Math.max(yMax, val);
+    }
+  }
+  const pad = (yMax - yMin) * 0.18 || 0.5;
+  const lo = yMin - pad, hi = yMax + pad;
+
+  const box = $('chart');
+  const w = Math.max(320, Math.round(box.clientWidth || 780));
+  const h = Math.max(210, Math.round(box.clientHeight || 252));
+  const left = 64, right = w - 18, top = 26, bottom = h - 34;
+  const t0 = dateValue(data[0].date), t1 = dateValue(data.at(-1).date);
+  const span = Math.max(1, t1 - t0);
+  const toX = d => left + ((dateValue(d) - t0) / span) * (right - left);
+  const toY = val => bottom - ((val - lo) / (hi - lo)) * (bottom - top);
+
+  let axes = '';
+  for (let i = 0; i < 5; i++) {
+    const y = top + (i * (bottom - top)) / 4;
+    const val = hi - (i * (hi - lo)) / 4;
+    axes += `<line x1="${left}" y1="${y.toFixed(1)}" x2="${right}" y2="${y.toFixed(1)}" stroke="var(--chart-grid)" stroke-dasharray="4 5"/><text x="${left - 9}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" class="axis-label">${signed(val)}</text>`;
+  }
+  const zeroY = toY(0);
+  axes += `<line x1="${left}" y1="${zeroY.toFixed(1)}" x2="${right}" y2="${zeroY.toFixed(1)}" stroke="var(--border-strong)" stroke-dasharray="2 3"/>`;
+
+  const xTicks = w < 480 ? 3 : 5;
+  for (let i = 0; i < xTicks; i++) {
+    const x = left + (i * (right - left)) / (xTicks - 1);
+    const iso = new Date(t0 + (i * span) / (xTicks - 1)).toISOString();
+    const label = span > 365 * 86400000 ? iso.slice(0, 7) : iso.slice(5, 10);
+    axes += `<text x="${x.toFixed(1)}" y="${h - 10}" text-anchor="middle" class="axis-label">${label}</text>`;
+  }
+
+  const xCoords = data.map(p => toX(p.date));
+  const pathsHtml = seriesDefs.map(s => {
+    const dPath = pctSeries[s.key].map((val, i) => `${i ? 'L' : 'M'}${xCoords[i].toFixed(1)},${toY(val).toFixed(1)}`).join(' ');
+    return `<path d="${dPath}" fill="none" stroke="${s.color}" stroke-width="${s.key === pair ? '2.6' : '2'}" class="chart-line-path"/>`;
+  }).join('');
+
+  box.innerHTML = `
+    <svg id="chartSvg" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(dict.comparePairTitle)}">
+      ${axes}
+      <g class="${animate ? 'chart-reveal' : ''}">
+        ${pathsHtml}
+      </g>
+      <line id="crosshair" x1="0" x2="0" y1="${top}" y2="${bottom}" stroke="var(--accent)" stroke-opacity="0.55" stroke-dasharray="3 3" visibility="hidden"/>
+      <rect x="${left}" y="${top}" width="${right - left}" height="${bottom - top}" fill="transparent" id="hitbox"/>
+    </svg>
+    <div class="chart-tip" id="chartTip" hidden></div>`;
+
+  $('chartSource').textContent = dict.compareSource;
+  $('chartTiming').textContent = dict.chartTimingDaily;
+  $('chartPair').textContent = dict.comparePairTitle;
+  const activeFinal = pctSeries[pair].at(-1);
+  $('chartValue').textContent = signed(activeFinal);
+  $('chartChange').textContent = `${labels[pair]} · ${dict.compareValueSub}`;
+  $('chartChange').className = 'change tabular ' + (activeFinal >= 0 ? 'up' : 'down');
+  $('summaryMetrics').hidden = true;
+  $('compareLegend').hidden = false;
+  $('compareLegend').innerHTML = seriesDefs.map(s => {
+    const chg = pctSeries[s.key].at(-1);
+    return `<div class="compare-chip"><span class="compare-swatch" style="background:${s.color}"></span><span>${s.name}</span><span class="tabular ${chg >= 0 ? 'up' : 'down'}" style="padding:1px 5px;border-radius:4px">${signed(chg)}</span></div>`;
+  }).join('');
+  $('firstDate').textContent = data[0].date;
+  $('lastDate').textContent = data.at(-1).date;
+
+  const svg = $('chartSvg'), tip = $('chartTip');
+  let active = 0;
+  function hover(e) {
+    const rect = svg.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * w;
+    active = xCoords.reduce((best, px, i) => Math.abs(px - x) < Math.abs(xCoords[best] - x) ? i : best, 0);
+    const px = xCoords[active];
+    const py = toY(pctSeries[pair][active]);
+    $('crosshair').setAttribute('x1', px);
+    $('crosshair').setAttribute('x2', px);
+    $('crosshair').setAttribute('visibility', 'visible');
+    tip.hidden = false;
+    const rows = seriesDefs.map(s => {
+      const val = Number(data[active][s.key]).toFixed(4);
+      const pct = signed(pctSeries[s.key][active]);
+      return `<div><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${s.color};margin-right:6px"></span><strong>${s.name}</strong> &nbsp; ${pct} <span style="opacity:.75">(${val})</span></div>`;
+    }).join('');
+    tip.innerHTML = `${esc(data[active].date)}${rows}<small>${esc(dict.tipHint)}</small>`;
+    tip.style.left = Math.min(Math.max((px / w) * 100, 18), 82) + '%';
+    tip.style.top = Math.max(20, (py / h) * 100 - 4) + '%';
+  }
+  svg.addEventListener('pointermove', hover);
+  svg.addEventListener('pointerleave', () => {
+    tip.hidden = true;
+    $('crosshair').setAttribute('visibility', 'hidden');
+  });
+  svg.addEventListener('click', e => {
+    hover(e);
+    selectedDate = data[active].date;
+    $('eventDate').value = selectedDate;
+    renderEvents();
+    experiment();
+  });
+}
+
 function draw(animate = false) {
+  if (compareMode) {
+    drawCompare(animate);
+    return;
+  }
+  $('summaryMetrics').hidden = false;
+  $('compareLegend').hidden = true;
+  updateChartSourceText();
   const dict = t();
   if (points.length < 2) {
     $('chart').innerHTML = `<div class="loading">${esc(dict.historyInsufficient)}</div>`;
@@ -559,6 +890,7 @@ function draw(animate = false) {
     $('chart').innerHTML = `<div class="loading">${esc(dict.historyInsufficient)}</div>`;
     return;
   }
+  lastVisibleData = data;
 
   const hasLive = data.some(p => p.live);
   $('chartTiming').textContent = hasLive ? dict.chartTimingLive : dict.chartTimingDaily;
@@ -586,6 +918,11 @@ function draw(animate = false) {
   }
   if (showMa30) {
     for (const p of data) if (p.ma30 != null) { yMin = Math.min(yMin, p.ma30); yMax = Math.max(yMax, p.ma30); }
+  }
+  const targetVal = getActiveTarget();
+  if (targetVal != null) {
+    yMin = Math.min(yMin, targetVal);
+    yMax = Math.max(yMax, targetVal);
   }
 
   const pad = (yMax - yMin) * 0.22 || Math.max(Math.abs(yMax) * 0.01, 0.01);
@@ -616,6 +953,13 @@ function draw(animate = false) {
   };
   const ma7Path = showMa7 ? buildMaPath('ma7') : '';
   const ma30Path = showMa30 ? buildMaPath('ma30') : '';
+
+  let targetLineSvg = '';
+  if (targetVal != null) {
+    const ty = toY(targetVal);
+    const labelY = Math.max(top + 10, ty - 6);
+    targetLineSvg = `<line x1="${left}" y1="${ty.toFixed(1)}" x2="${right}" y2="${ty.toFixed(1)}" stroke="var(--chart-target)" stroke-width="1.5" stroke-dasharray="6 4"/><text x="${right - 4}" y="${labelY.toFixed(1)}" text-anchor="end" class="target-badge">${esc(dict.targetTag(targetVal.toFixed(4)))}</text>`;
+  }
 
   let lineLength = 0;
   for (let i = 1; i < xy.length; i++) {
@@ -684,9 +1028,7 @@ function draw(animate = false) {
     return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4.5" fill="${color}" stroke="var(--extrema-stroke)" stroke-width="2"/><text x="${tx.toFixed(1)}" y="${posY.toFixed(1)}" text-anchor="${anchor}" class="extrema-label" fill="${color}">${lbl} ${v[index].toFixed(4)}</text>`;
   };
 
-  const animLineClass = animate ? 'chart-line-path chart-line-animate' : 'chart-line-path';
-  const animAreaClass = animate ? 'chart-area-animate' : '';
-  const dashAttr = animate ? `stroke-dasharray="${lineLength}" stroke-dashoffset="${lineLength}" style="--line-len:${lineLength}"` : '';
+  const revealClass = animate ? 'chart-reveal' : '';
 
   box.innerHTML = `
     <svg id="chartSvg" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(labels[pair])} (${min.toFixed(4)} – ${max.toFixed(4)})">
@@ -698,11 +1040,14 @@ function draw(animate = false) {
       </defs>
       ${axes}
       ${selectedPin}
-      <path d="${line} L${right},${bottom} L${left},${bottom} Z" fill="url(#shade)" class="${animAreaClass}"/>
-      ${ma30Path ? `<path d="${ma30Path}" stroke="var(--chart-ma30)" stroke-dasharray="5 3" class="chart-ma-line"/>` : ''}
-      ${ma7Path ? `<path d="${ma7Path}" stroke="var(--chart-ma7)" class="chart-ma-line"/>` : ''}
-      <path d="${line}" fill="none" stroke="var(--chart-line)" stroke-width="2.4" class="${animLineClass}" ${dashAttr}/>
-      ${eventPins}
+      ${targetLineSvg}
+      <g class="${revealClass}">
+        <path d="${line} L${right},${bottom} L${left},${bottom} Z" fill="url(#shade)"/>
+        ${ma30Path ? `<path d="${ma30Path}" stroke="var(--chart-ma30)" stroke-dasharray="5 3" class="chart-ma-line"/>` : ''}
+        ${ma7Path ? `<path d="${ma7Path}" stroke="var(--chart-ma7)" class="chart-ma-line"/>` : ''}
+        <path d="${line}" fill="none" stroke="var(--chart-line)" stroke-width="2.4" class="chart-line-path"/>
+        ${eventPins}
+      </g>
       ${mark(highIndex, true)}
       ${mark(lowIndex, false)}
       <line id="crosshair" x1="0" x2="0" y1="${top}" y2="${bottom}" stroke="var(--accent)" stroke-opacity="0.55" stroke-dasharray="3 3" visibility="hidden"/>
@@ -821,6 +1166,11 @@ function selectPair(nextPair) {
   document.querySelectorAll('#pairs button').forEach(x => x.classList.toggle('selected', x.dataset.pair === pair));
   useReference('selecting');
   renderEvents();
+  const symbol = pairSymbols[pair];
+  const q = quoteData.get(symbol);
+  if (!q || q.deferred) {
+    loadQuote(symbol);
+  }
   loadSeries();
 }
 
@@ -875,6 +1225,7 @@ function applyLang(next) {
   updateRangeStatusText();
   updateChartSourceText();
   renderQuotes();
+  renderTargetControls();
   if (points.length >= 2) draw(false);
   if (eventsReady) {
     updateEventStatus();
@@ -915,14 +1266,27 @@ $('pairs').addEventListener('click', e => {
 function syncMaButtons() {
   document.querySelectorAll('#maToggles button[data-ma]').forEach(btn => {
     const active = btn.dataset.ma === '7' ? showMa7 : showMa30;
-    btn.classList.toggle('selected', active);
-    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    btn.classList.toggle('selected', active && !compareMode);
+    btn.disabled = compareMode;
+    btn.setAttribute('aria-pressed', active && !compareMode ? 'true' : 'false');
   });
+  const cmpBtn = $('compareBtn');
+  cmpBtn.classList.toggle('selected', compareMode);
+  cmpBtn.setAttribute('aria-pressed', compareMode ? 'true' : 'false');
 }
 
 $('maToggles').addEventListener('click', e => {
+  const cmp = e.target.closest('#compareBtn');
+  if (cmp) {
+    compareMode = !compareMode;
+    try { localStorage.setItem('cl_compare', compareMode ? '1' : '0'); } catch (err) {}
+    syncMaButtons();
+    renderTargetControls();
+    if (points.length >= 2) draw(true);
+    return;
+  }
   const btn = e.target.closest('button[data-ma]');
-  if (!btn) return;
+  if (!btn || compareMode) return;
   if (btn.dataset.ma === '7') {
     showMa7 = !showMa7;
     try { localStorage.setItem('cl_ma7', showMa7 ? '1' : '0'); } catch (err) {}
@@ -934,27 +1298,104 @@ $('maToggles').addEventListener('click', e => {
   if (points.length >= 2) draw(false);
 });
 
+$('targetRateInput').addEventListener('input', e => {
+  let clean = e.target.value.replace(/[^\d.]/g, '');
+  const dotIdx = clean.indexOf('.');
+  if (dotIdx !== -1) clean = clean.slice(0, dotIdx + 1) + clean.slice(dotIdx + 1).replace(/\./g, '');
+  if (clean !== e.target.value) e.target.value = clean;
+  targets[pair] = clean;
+  try { localStorage.setItem('cl_targets', JSON.stringify(targets)); } catch (err) {}
+  renderTargetControls();
+  if (points.length >= 2) draw(false);
+});
+
+$('clearTarget').addEventListener('click', () => {
+  targets[pair] = '';
+  $('targetRateInput').value = '';
+  try { localStorage.setItem('cl_targets', JSON.stringify(targets)); } catch (err) {}
+  renderTargetControls();
+  if (points.length >= 2) draw(false);
+});
+
+$('exportCsv').addEventListener('click', () => {
+  if (!lastVisibleData.length) return;
+  let rows;
+  if (compareMode) {
+    rows = [['date', 'AUD/CNY', 'USD/CNY', 'AUD/USD']];
+    for (const p of lastVisibleData) {
+      rows.push([p.date, p.audCny, p.usdCny, p.audUsd]);
+    }
+  } else {
+    rows = [['date', pairSymbols[pair], 'MA7', 'MA30', 'events_on_date']];
+    const rel = relevant[pair];
+    const countByDate = new Map();
+    for (const ev of events) {
+      if (rel.includes(ev.category)) countByDate.set(ev.date, (countByDate.get(ev.date) || 0) + 1);
+    }
+    for (const p of lastVisibleData) {
+      rows.push([
+        p.date,
+        p[pair],
+        p.ma7 != null ? p.ma7.toFixed(6) : '',
+        p.ma30 != null ? p.ma30.toFixed(6) : '',
+        countByDate.get(p.date) || 0
+      ]);
+    }
+  }
+  const csv = '\uFEFF' + rows.map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `currencylens-${compareMode ? 'compare' : pairSymbols[pair].replace('/', '_')}-${lastVisibleData.at(-1).date}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
+});
+
+$('agencyFilters').addEventListener('click', e => {
+  const pill = e.target.closest('button[data-agency]');
+  if (!pill) return;
+  agencyFilter = pill.dataset.agency;
+  renderEvents();
+});
+
 $('range').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b) return;
   requestId++;
+  if (customAbort) {
+    customAbort.abort();
+    customAbort = null;
+  }
+  const wasCustom = custom;
   custom = false;
   referencePoints = basePoints;
-  points = referencePoints;
-  if (points.length) {
-    $('eventDate').min = points[0].date;
-    $('eventDate').max = points.at(-1).date;
+  if (referencePoints.length) {
+    $('eventDate').min = referencePoints[0].date;
+    $('eventDate').max = referencePoints.at(-1).date;
   }
   days = Number(b.dataset.days);
-  selectedDate = points.at(-1)?.date || null;
+  selectedDate = referencePoints.at(-1)?.date || null;
   $('eventDate').value = selectedDate || '';
   lastRangeNote = { type: 'default' };
   updateRangeStatusText();
   document.querySelectorAll('#range button').forEach(x => x.classList.toggle('selected', x === b));
-  animateChartNext = true;
-  useReference('ref');
   renderEvents();
-  loadSeries();
+
+  // If we already have the Twelve Data series for this pair & default window, redraw directly in one smooth pass!
+  const q = quoteData.get(pairSymbols[pair]);
+  if (!wasCustom && chartSource === 'twelve' && points.length >= 2) {
+    draw(true);
+    experiment();
+    return;
+  }
+  points = referencePoints;
+  animateChartNext = true;
+  if (q && q.mode === 'live' && q.source !== 'Finnhub') {
+    loadSeries();
+  } else {
+    useReference(q && q.source === 'Finnhub' ? 'finnhubRef' : 'ref');
+  }
 });
 
 $('eventDate').addEventListener('change', e => {
@@ -1038,19 +1479,9 @@ $('customRange').addEventListener('submit', async e => {
     updateRangeStatusText();
     return;
   }
-  const id = ++requestId;
-  lastRangeNote = { type: 'loading' };
-  updateRangeStatusText();
-  try {
-    const result = await api(`/api/market/history/range?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
-    if (id !== requestId) return;
-    if (result.points.length < 2) {
-      lastRangeNote = { type: 'insufficient' };
-      updateRangeStatusText();
-      return;
-    }
+  const applyCustomPoints = rangePoints => {
     custom = true;
-    referencePoints = result.points;
+    referencePoints = rangePoints;
     points = referencePoints;
     selectedDate = points.at(-1).date;
     $('eventDate').min = points[0].date;
@@ -1063,16 +1494,48 @@ $('customRange').addEventListener('submit', async e => {
     useReference('ref');
     renderEvents();
     loadSeries();
+  };
+
+  const cacheKey = `${from}:${to}`;
+  if (customRangeCache.has(cacheKey)) {
+    applyCustomPoints(customRangeCache.get(cacheKey));
+    return;
+  }
+
+  if (customAbort) customAbort.abort();
+  customAbort = new AbortController();
+  const id = ++requestId;
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+  if (submitBtn) submitBtn.disabled = true;
+  lastRangeNote = { type: 'loading' };
+  updateRangeStatusText();
+  try {
+    const result = await api(
+      `/api/market/history/range?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      { signal: customAbort.signal, timeoutMs: 18000 }
+    );
+    if (id !== requestId) return;
+    if (!result.points || result.points.length < 2) {
+      lastRangeNote = { type: 'insufficient' };
+      updateRangeStatusText();
+      return;
+    }
+    customRangeCache.set(cacheKey, result.points);
+    applyCustomPoints(result.points);
   } catch (err) {
+    if (err && err.name === 'AbortError' && id !== requestId) return;
     if (id === requestId) {
       lastRangeNote = { type: 'error' };
       updateRangeStatusText();
     }
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
   }
 });
 
 // Initialize
 syncMaButtons();
+renderTargetControls();
 applyTheme(theme);
 applyLang(lang);
 loadInitialQuotes();

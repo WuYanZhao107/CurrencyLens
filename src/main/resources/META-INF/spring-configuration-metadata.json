@@ -1,0 +1,14 @@
+{
+  "properties": [
+    {
+      "name": "currencylens.twelve-data-api-key",
+      "type": "java.lang.String",
+      "description": "Optional Twelve Data API key for live quotes and historical daily series."
+    },
+    {
+      "name": "currencylens.finnhub-api-key",
+      "type": "java.lang.String",
+      "description": "Optional Finnhub API key used as a fallback live quote provider."
+    }
+  ]
+}

@@ -1,11 +1,14 @@
 package com.currencylens.currencylens;
 
 import java.math.BigDecimal;
+import java.net.http.HttpClient;
 import java.time.*;
 import java.util.*;
 import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.server.ResponseStatusException;
@@ -20,8 +23,17 @@ public class SeriesController {
     record Series(String pair, String source, List<SeriesPoint> points) {}
     record CachedSeries(Series data, Instant expires) {}
 
+    private static RestClient defaultRestClient() {
+        var httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
+        var factory = new JdkClientHttpRequestFactory(httpClient);
+        factory.setReadTimeout(Duration.ofSeconds(12));
+        return RestClient.builder().requestFactory(factory).build();
+    }
+
     @Autowired
-    public SeriesController() { this(RestClient.create(), () -> System.getenv("TWELVE_DATA_API_KEY")); }
+    public SeriesController(@Value("${currencylens.twelve-data-api-key:}") String configuredKey) {
+        this(defaultRestClient(), () -> (configuredKey != null && !configuredKey.isBlank()) ? configuredKey : System.getenv("TWELVE_DATA_API_KEY"));
+    }
     SeriesController(RestClient client, Supplier<String> keySupplier) { this.client = client; this.keySupplier = keySupplier; }
 
     @GetMapping("/series")

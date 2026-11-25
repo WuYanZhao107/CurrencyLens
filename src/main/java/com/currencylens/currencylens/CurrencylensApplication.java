@@ -11,3 +11,5 @@ public class CurrencylensApplication {
 	}
 
 }
+
+//运行http://localhost:8080/

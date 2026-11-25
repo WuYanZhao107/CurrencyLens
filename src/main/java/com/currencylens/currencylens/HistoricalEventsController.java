@@ -64,16 +64,8 @@ public class HistoricalEventsController {
 
     private FetchOutcome loadRba(int year) {
         String base = "https://www.rba.gov.au/media-releases/" + year + "/";
-        var out = new ArrayList<Event>();
         try {
-            for (Element item : Jsoup.parse(get(base), base).select("article.rss-mr-item")) {
-                Element link = item.selectFirst("a[itemprop=url]"), time = item.selectFirst("time[datetime]");
-                if (link == null || time == null || time.attr("datetime").length() < 10) continue;
-                String title = link.text();
-                String url = link.absUrl("href");
-                if (!url.startsWith("https://www.rba.gov.au/")) continue;
-                out.add(new Event(time.attr("datetime").substring(0, 10), "澳洲联储", title, url, "AUD"));
-            }
+            List<Event> out = parseRba(get(base), base);
             if (out.isEmpty()) throw new IllegalStateException("no archive items");
             return new FetchOutcome(out, null);
         } catch (Exception e) {
@@ -81,28 +73,46 @@ public class HistoricalEventsController {
         }
     }
 
+    static List<Event> parseRba(String html, String base) {
+        var out = new ArrayList<Event>();
+        for (Element item : Jsoup.parse(html, base).select("article.rss-mr-item")) {
+            Element link = item.selectFirst("a[itemprop=url]"), time = item.selectFirst("time[datetime]");
+            if (link == null || time == null || time.attr("datetime").length() < 10) continue;
+            String title = link.text();
+            String url = link.absUrl("href");
+            if (!url.startsWith("https://www.rba.gov.au/")) continue;
+            out.add(new Event(time.attr("datetime").substring(0, 10), "澳洲联储", title, url, "AUD"));
+        }
+        return out;
+    }
+
     private FetchOutcome loadFed(int year) {
         String base = "https://www.federalreserve.gov/newsevents/pressreleases/" + year + "-press-fomc.htm";
-        var out = new ArrayList<Event>();
         try {
-            for (Element row : Jsoup.parse(get(base), base).select("div.row.eventlist div.row")) {
-                Element link = row.selectFirst("a[href*=monetary]"), time = row.selectFirst("time");
-                if (link == null || time == null) continue;
-                LocalDate date;
-                try {
-                    date = LocalDate.parse(time.text(), java.time.format.DateTimeFormatter.ofPattern("M/d/uuuu"));
-                } catch (Exception e) {
-                    continue;
-                }
-                String url = link.absUrl("href");
-                if (!url.startsWith("https://www.federalreserve.gov/")) continue;
-                out.add(new Event(date.toString(), "美联储", link.text(), url, "USD"));
-            }
+            List<Event> out = parseFed(get(base), base);
             if (out.isEmpty()) throw new IllegalStateException("no archive items");
             return new FetchOutcome(out, null);
         } catch (Exception e) {
             return new FetchOutcome(List.of(), "美联储 " + year + " 年公告未能获取");
         }
+    }
+
+    static List<Event> parseFed(String html, String base) {
+        var out = new ArrayList<Event>();
+        for (Element row : Jsoup.parse(html, base).select("div.row.eventlist div.row")) {
+            Element link = row.selectFirst("a[href*=monetary]"), time = row.selectFirst("time");
+            if (link == null || time == null) continue;
+            LocalDate date;
+            try {
+                date = LocalDate.parse(time.text(), java.time.format.DateTimeFormatter.ofPattern("M/d/uuuu"));
+            } catch (Exception e) {
+                continue;
+            }
+            String url = link.absUrl("href");
+            if (!url.startsWith("https://www.federalreserve.gov/")) continue;
+            out.add(new Event(date.toString(), "美联储", link.text(), url, "USD"));
+        }
+        return out;
     }
 
     private FetchOutcome loadPbc(int minYear) {
@@ -115,20 +125,8 @@ public class HistoricalEventsController {
         int succeeded = 0;
         for (String base : urls) {
             try {
-                for (Element row : Jsoup.parse(get(base), base).select("tr")) {
-                    Element link = row.selectFirst("a[href]"), time = row.selectFirst("span.hui12");
-                    if (link == null || time == null) continue;
-                    String date = time.text().trim();
-                    if (!date.matches("\\d{4}-\\d{2}-\\d{2}") || date.compareTo(cutoff) < 0) continue;
-                    String url = link.absUrl("href");
-                    if (!url.startsWith("https://www.pbc.gov.cn/") || url.contains("#")) continue;
-                    String text = link.text().trim();
-                    String attrTitle = link.attr("title").trim();
-                    String title = (!attrTitle.isEmpty() && !"true".equalsIgnoreCase(attrTitle) && text.endsWith("..."))
-                            ? attrTitle
-                            : text;
-                    if (title.isEmpty()) continue;
-                    deduped.putIfAbsent(url, new Event(date, "中国人民银行", title, url, "CNY"));
+                for (Event ev : parsePbc(get(base), base, cutoff)) {
+                    deduped.putIfAbsent(ev.url(), ev);
                 }
                 succeeded++;
             } catch (Exception ignored) {
@@ -138,6 +136,26 @@ public class HistoricalEventsController {
             return new FetchOutcome(List.of(), "中国人民银行近期公告未能获取");
         }
         return new FetchOutcome(List.copyOf(deduped.values()), null);
+    }
+
+    static List<Event> parsePbc(String html, String base, String cutoff) {
+        var out = new ArrayList<Event>();
+        for (Element row : Jsoup.parse(html, base).select("tr")) {
+            Element link = row.selectFirst("a[href]"), time = row.selectFirst("span.hui12");
+            if (link == null || time == null) continue;
+            String date = time.text().trim();
+            if (!date.matches("\\d{4}-\\d{2}-\\d{2}") || date.compareTo(cutoff) < 0) continue;
+            String url = link.absUrl("href");
+            if (!url.startsWith("https://www.pbc.gov.cn/") || url.contains("#")) continue;
+            String text = link.text().trim();
+            String attrTitle = link.attr("title").trim();
+            String title = (!attrTitle.isEmpty() && !"true".equalsIgnoreCase(attrTitle) && text.endsWith("..."))
+                    ? attrTitle
+                    : text;
+            if (title.isEmpty()) continue;
+            out.add(new Event(date, "中国人民银行", title, url, "CNY"));
+        }
+        return out;
     }
 
     private FetchOutcome loadSafe(int minYear) {
@@ -181,22 +199,26 @@ public class HistoricalEventsController {
                 ? "https://www.safe.gov.cn/safe/whxw/index.html"
                 : "https://www.safe.gov.cn/safe/whxw/index_" + pageNum + ".html";
         try {
-            List<Event> pageOut = new ArrayList<>();
-            for (Element li : Jsoup.parse(get(base), base).select("li")) {
-                Element link = li.selectFirst("dt a[href]"), time = li.selectFirst("dd");
-                if (link == null || time == null) continue;
-                String date = time.text().trim();
-                if (!date.matches("\\d{4}-\\d{2}-\\d{2}")) continue;
-                String url = link.absUrl("href");
-                if (!url.startsWith("https://www.safe.gov.cn/")) continue;
-                String title = link.attr("title").trim();
-                if (title.isEmpty()) title = link.text().trim();
-                if (title.isEmpty()) continue;
-                pageOut.add(new Event(date, "国家外汇管理局", title, url, "CNY"));
-            }
-            return pageOut;
+            return parseSafe(get(base), base);
         } catch (Exception e) {
             return null;
         }
+    }
+
+    static List<Event> parseSafe(String html, String base) {
+        List<Event> pageOut = new ArrayList<>();
+        for (Element li : Jsoup.parse(html, base).select("li")) {
+            Element link = li.selectFirst("dt a[href]"), time = li.selectFirst("dd");
+            if (link == null || time == null) continue;
+            String date = time.text().trim();
+            if (!date.matches("\\d{4}-\\d{2}-\\d{2}")) continue;
+            String url = link.absUrl("href");
+            if (!url.startsWith("https://www.safe.gov.cn/")) continue;
+            String title = link.attr("title").trim();
+            if (title.isEmpty()) title = link.text().trim();
+            if (title.isEmpty()) continue;
+            pageOut.add(new Event(date, "国家外汇管理局", title, url, "CNY"));
+        }
+        return pageOut;
     }
 }
