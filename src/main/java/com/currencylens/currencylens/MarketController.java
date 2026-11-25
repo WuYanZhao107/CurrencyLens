@@ -29,12 +29,14 @@ public class MarketController {
     private volatile Quotes cachedQuotes;
     private volatile Instant quoteExpires = Instant.EPOCH;
     private final Map<String, CachedQuote> singleQuoteCache = new HashMap<>();
+    private final Map<String, CachedHistory> rangeHistoryCache = new LinkedHashMap<>();
     private volatile News cachedNews;
     private volatile Instant newsExpires = Instant.EPOCH;
 
     record Frankfurter(Map<String, Map<String, BigDecimal>> rates) {}
     record Point(String date, BigDecimal usdCny, BigDecimal audCny, BigDecimal audUsd) {}
     record History(List<Point> points, String source) {}
+    record CachedHistory(History history, Instant expires) {}
     record Quote(String pair, BigDecimal rate, String time) {}
     record Quotes(String mode, String source, List<Quote> quotes, String message) {}
     record CachedQuote(Quotes quotes, Instant expires) {}
@@ -42,7 +44,7 @@ public class MarketController {
     record News(List<Story> stories, List<String> errors) {}
 
     @GetMapping("/history/range")
-    public History historyRange(@RequestParam String from, @RequestParam String to) {
+    public synchronized History historyRange(@RequestParam String from, @RequestParam String to) {
         java.time.YearMonth first, last;
         try {
             first = java.time.YearMonth.parse(from);
@@ -51,6 +53,9 @@ public class MarketController {
         var current = java.time.YearMonth.now(java.time.ZoneOffset.UTC);
         if (first.isAfter(last) || last.isAfter(current) || first.isBefore(current.minusMonths(239)) || java.time.temporal.ChronoUnit.MONTHS.between(first, last) >= 240)
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择过去 20 年内的月份，且开始月份不晚于结束月份");
+        String cacheKey = first + ":" + last;
+        CachedHistory cached = rangeHistoryCache.get(cacheKey);
+        if (cached != null && Instant.now().isBefore(cached.expires())) return cached.history();
         var end = last.atEndOfMonth();
         var today = LocalDate.now(java.time.ZoneOffset.UTC);
         if (end.isAfter(today)) end = today;
@@ -65,7 +70,10 @@ public class MarketController {
                 var r = e.getValue();
                 return new Point(e.getKey(), cross(r.get("CNY"), r.get("USD")), cross(r.get("CNY"), r.get("AUD")), cross(r.get("USD"), r.get("AUD")));
             }).toList();
-            return new History(result, "Frankfurter v1 / ECB reference rates");
+            History history = new History(result, "Frankfurter v1 / ECB reference rates");
+            if (rangeHistoryCache.size() >= 16) rangeHistoryCache.remove(rangeHistoryCache.keySet().iterator().next());
+            rangeHistoryCache.put(cacheKey, new CachedHistory(history, Instant.now().plus(Duration.ofMinutes(15))));
+            return history;
         } catch (Exception e) { throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "历史汇率暂时不可用，请稍后重试"); }
     }
 
